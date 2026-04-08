@@ -454,8 +454,8 @@ class _FixedOffset(datetime.tzinfo):
 
 
 # Refactoring type: Change Function Signature (remove mutable default argument)
-# Changed: _tzinfos now defaults to None and is initialized once safely.
-def FixedOffset(offset, _tzinfos=None):
+# Changed: removed mutable-arg cache parameter and now use module-level cache directly.
+def FixedOffset(offset):
     """return a fixed-offset timezone based off a number of minutes.
 
         >>> one = FixedOffset(-330)
@@ -511,16 +511,13 @@ def FixedOffset(offset, _tzinfos=None):
     if offset == 0:
         return UTC
 
-    if _tzinfos is None:
-        _tzinfos = _fixed_offset_cache
-
-    info = _tzinfos.get(offset)
+    info = _fixed_offset_cache.get(offset)
     if info is None:
         # We haven't seen this one before. we need to save it.
 
         # Use setdefault to avoid a race condition and make sure we have
         # only one
-        info = _tzinfos.setdefault(offset, _FixedOffset(offset))
+        info = _fixed_offset_cache.setdefault(offset, _FixedOffset(offset))
 
     return info
 

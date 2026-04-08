@@ -59,6 +59,7 @@ def memorized_ttinfo(*args):
 
 
 _notime = memorized_timedelta(0)
+_DST_GAP_RESOLUTION_HOURS = 6
 
 
 def _to_seconds(td):
@@ -258,6 +259,58 @@ class DstTzInfo(BaseTzInfo):
         # convert it back, and return it
         return self.fromutc(dt)
 
+    # Refactoring type: Decompose Method
+    # Changed: extracted candidate discovery from localize().
+    def _find_possible_localized_datetimes(self, dt):
+        possible_loc_dt = set()
+        for delta in [timedelta(days=-1), timedelta(days=1)]:
+            loc_dt = dt + delta
+            idx = max(0, bisect_right(
+                self._utc_transition_times, loc_dt) - 1)
+            inf = self._transition_info[idx]
+            tzinfo = self._tzinfos[inf]
+            loc_dt = tzinfo.normalize(dt.replace(tzinfo=tzinfo))
+            if loc_dt.replace(tzinfo=None) == dt:
+                possible_loc_dt.add(loc_dt)
+        return possible_loc_dt
+
+    # Refactoring type: Decompose Method + Replace Magic Number with Named Constant
+    # Changed: extracted non-existent time handling and replaced hardcoded 6 with named constant.
+    def _handle_non_existent_time(self, dt, is_dst):
+        if is_dst is None:
+            raise NonExistentTimeError(dt)
+        if is_dst:
+            return self.localize(
+                dt + timedelta(hours=_DST_GAP_RESOLUTION_HOURS), is_dst=True
+            ) - timedelta(hours=_DST_GAP_RESOLUTION_HOURS)
+        return self.localize(
+            dt - timedelta(hours=_DST_GAP_RESOLUTION_HOURS), is_dst=False
+        ) + timedelta(hours=_DST_GAP_RESOLUTION_HOURS)
+
+    # Refactoring type: Decompose Method
+    # Changed: extracted ambiguous-time resolution from localize().
+    def _select_ambiguous_localized_dt(self, dt, possible_loc_dt, is_dst):
+        if is_dst is None:
+            raise AmbiguousTimeError(dt)
+
+        filtered_possible_loc_dt = [
+            p for p in possible_loc_dt if bool(p.tzinfo._dst) == is_dst
+        ]
+
+        if len(filtered_possible_loc_dt) == 1:
+            return filtered_possible_loc_dt[0]
+
+        if len(filtered_possible_loc_dt) == 0:
+            filtered_possible_loc_dt = list(possible_loc_dt)
+
+        dates = {}  # utc -> local
+        for local_dt in filtered_possible_loc_dt:
+            utc_time = (
+                local_dt.replace(tzinfo=None) - local_dt.tzinfo._utcoffset)
+            assert utc_time not in dates
+            dates[utc_time] = local_dt
+        return dates[[min, max][not is_dst](dates)]
+
     def localize(self, dt, is_dst=False):
         '''Convert naive time to local time.
 
@@ -321,16 +374,7 @@ class DstTzInfo(BaseTzInfo):
             raise ValueError('Not naive datetime (tzinfo is already set)')
 
         # Find the two best possibilities.
-        possible_loc_dt = set()
-        for delta in [timedelta(days=-1), timedelta(days=1)]:
-            loc_dt = dt + delta
-            idx = max(0, bisect_right(
-                self._utc_transition_times, loc_dt) - 1)
-            inf = self._transition_info[idx]
-            tzinfo = self._tzinfos[inf]
-            loc_dt = tzinfo.normalize(dt.replace(tzinfo=tzinfo))
-            if loc_dt.replace(tzinfo=None) == dt:
-                possible_loc_dt.add(loc_dt)
+        possible_loc_dt = self._find_possible_localized_datetimes(dt)
 
         if len(possible_loc_dt) == 1:
             return possible_loc_dt.pop()
@@ -339,62 +383,20 @@ class DstTzInfo(BaseTzInfo):
         # to convert a time that never happened - the time period jumped
         # during the start-of-DST transition period.
         if len(possible_loc_dt) == 0:
-            # If we refuse to guess, raise an exception.
-            if is_dst is None:
-                raise NonExistentTimeError(dt)
-
-            # If we are forcing the pre-DST side of the DST transition, we
-            # obtain the correct timezone by winding the clock forward a few
-            # hours.
-            elif is_dst:
-                return self.localize(
-                    dt + timedelta(hours=6), is_dst=True) - timedelta(hours=6)
-
-            # If we are forcing the post-DST side of the DST transition, we
-            # obtain the correct timezone by winding the clock back.
-            else:
-                return self.localize(
-                    dt - timedelta(hours=6),
-                    is_dst=False) + timedelta(hours=6)
+            return self._handle_non_existent_time(dt, is_dst)
 
         # If we get this far, we have multiple possible timezones - this
         # is an ambiguous case occurring during the end-of-DST transition.
+        return self._select_ambiguous_localized_dt(dt, possible_loc_dt, is_dst)
 
-        # If told to be strict, raise an exception since we have an
-        # ambiguous case
-        if is_dst is None:
-            raise AmbiguousTimeError(dt)
-
-        # Filter out the possiblilities that don't match the requested
-        # is_dst
-        filtered_possible_loc_dt = [
-            p for p in possible_loc_dt if bool(p.tzinfo._dst) == is_dst
-        ]
-
-        # Hopefully we only have one possibility left. Return it.
-        if len(filtered_possible_loc_dt) == 1:
-            return filtered_possible_loc_dt[0]
-
-        if len(filtered_possible_loc_dt) == 0:
-            filtered_possible_loc_dt = list(possible_loc_dt)
-
-        # If we get this far, we have in a wierd timezone transition
-        # where the clocks have been wound back but is_dst is the same
-        # in both (eg. Europe/Warsaw 1915 when they switched to CET).
-        # At this point, we just have to guess unless we allow more
-        # hints to be passed in (such as the UTC offset or abbreviation),
-        # but that is just getting silly.
-        #
-        # Choose the earliest (by UTC) applicable timezone if is_dst=True
-        # Choose the latest (by UTC) applicable timezone if is_dst=False
-        # i.e., behave like end-of-DST transition
-        dates = {}  # utc -> local
-        for local_dt in filtered_possible_loc_dt:
-            utc_time = (
-                local_dt.replace(tzinfo=None) - local_dt.tzinfo._utcoffset)
-            assert utc_time not in dates
-            dates[utc_time] = local_dt
-        return dates[[min, max][not is_dst](dates)]
+    # Refactoring type: Extract Method
+    # Changed: consolidated repeated conditional fragment used by utcoffset/dst/tzname.
+    def _resolve_for_getters(self, dt, is_dst):
+        if dt is None:
+            return None
+        if dt.tzinfo is not self:
+            return self.localize(dt, is_dst)
+        return dt
 
     def utcoffset(self, dt, is_dst=None):
         '''See datetime.tzinfo.utcoffset
@@ -419,13 +421,12 @@ class DstTzInfo(BaseTzInfo):
         Ambiguous
 
         '''
+        # Refactoring type: Consolidate Duplicate Conditional Fragments
+        # Changed: shared dt resolution logic moved to _resolve_for_getters().
+        dt = self._resolve_for_getters(dt, is_dst)
         if dt is None:
             return None
-        elif dt.tzinfo is not self:
-            dt = self.localize(dt, is_dst)
-            return dt.tzinfo._utcoffset
-        else:
-            return self._utcoffset
+        return dt.tzinfo._utcoffset
 
     def dst(self, dt, is_dst=None):
         '''See datetime.tzinfo.dst
@@ -458,13 +459,12 @@ class DstTzInfo(BaseTzInfo):
         Ambiguous
 
         '''
+        # Refactoring type: Consolidate Duplicate Conditional Fragments
+        # Changed: shared dt resolution logic moved to _resolve_for_getters().
+        dt = self._resolve_for_getters(dt, is_dst)
         if dt is None:
             return None
-        elif dt.tzinfo is not self:
-            dt = self.localize(dt, is_dst)
-            return dt.tzinfo._dst
-        else:
-            return self._dst
+        return dt.tzinfo._dst
 
     def tzname(self, dt, is_dst=None):
         '''See datetime.tzinfo.tzname
@@ -496,13 +496,12 @@ class DstTzInfo(BaseTzInfo):
         ...     print('Ambiguous')
         Ambiguous
         '''
+        # Refactoring type: Consolidate Duplicate Conditional Fragments
+        # Changed: shared dt resolution logic moved to _resolve_for_getters().
+        dt = self._resolve_for_getters(dt, is_dst)
         if dt is None:
             return self.zone
-        elif dt.tzinfo is not self:
-            dt = self.localize(dt, is_dst)
-            return dt.tzinfo._tzname
-        else:
-            return self._tzname
+        return dt.tzinfo._tzname
 
     def __repr__(self):
         if self._dst:

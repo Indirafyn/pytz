@@ -135,6 +135,7 @@ def resource_exists(name):
 
 
 _tzinfo_cache = {}
+_fixed_offset_cache = {}
 
 
 def timezone(zone):
@@ -220,6 +221,23 @@ ZERO = datetime.timedelta(0)
 HOUR = datetime.timedelta(hours=1)
 
 
+# Refactoring type: Extract Method
+# Changed: shared naive-datetime validation used by UTC/_FixedOffset.localize.
+def _validate_naive_datetime(dt):
+    if dt.tzinfo is not None:
+        raise ValueError('Not naive datetime (tzinfo is already set)')
+
+
+# Refactoring type: Extract Method
+# Changed: shared normalize behavior used by UTC/_FixedOffset.normalize.
+def _normalize_with_timezone(dt, tz):
+    if dt.tzinfo is tz:
+        return dt
+    if dt.tzinfo is None:
+        raise ValueError('Naive time - no tzinfo set')
+    return dt.astimezone(tz)
+
+
 class UTC(BaseTzInfo):
     """UTC
 
@@ -251,17 +269,12 @@ class UTC(BaseTzInfo):
 
     def localize(self, dt, is_dst=False):
         '''Convert naive time to local time'''
-        if dt.tzinfo is not None:
-            raise ValueError('Not naive datetime (tzinfo is already set)')
+        _validate_naive_datetime(dt)
         return dt.replace(tzinfo=self)
 
     def normalize(self, dt, is_dst=False):
         '''Correct the timezone information on the given datetime'''
-        if dt.tzinfo is self:
-            return dt
-        if dt.tzinfo is None:
-            raise ValueError('Naive time - no tzinfo set')
-        return dt.astimezone(self)
+        return _normalize_with_timezone(dt, self)
 
     def __repr__(self):
         return "<UTC>"
@@ -432,20 +445,17 @@ class _FixedOffset(datetime.tzinfo):
 
     def localize(self, dt, is_dst=False):
         '''Convert naive time to local time'''
-        if dt.tzinfo is not None:
-            raise ValueError('Not naive datetime (tzinfo is already set)')
+        _validate_naive_datetime(dt)
         return dt.replace(tzinfo=self)
 
     def normalize(self, dt, is_dst=False):
         '''Correct the timezone information on the given datetime'''
-        if dt.tzinfo is self:
-            return dt
-        if dt.tzinfo is None:
-            raise ValueError('Naive time - no tzinfo set')
-        return dt.astimezone(self)
+        return _normalize_with_timezone(dt, self)
 
 
-def FixedOffset(offset, _tzinfos={}):
+# Refactoring type: Change Function Signature (remove mutable default argument)
+# Changed: _tzinfos now defaults to None and is initialized once safely.
+def FixedOffset(offset, _tzinfos=None):
     """return a fixed-offset timezone based off a number of minutes.
 
         >>> one = FixedOffset(-330)
@@ -500,6 +510,9 @@ def FixedOffset(offset, _tzinfos={}):
     """
     if offset == 0:
         return UTC
+
+    if _tzinfos is None:
+        _tzinfos = _fixed_offset_cache
 
     info = _tzinfos.get(offset)
     if info is None:

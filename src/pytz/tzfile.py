@@ -21,6 +21,61 @@ def _std_string(s):
     return str(s.decode('ASCII'))
 
 
+# Refactoring type: Extract Method + Replace Index-Based Loop with Structured Iteration
+# Changed: extracted ttinfo decoding and replaced manual index stepping with chunked iteration.
+def _parse_ttinfo(ttinfo_raw, tznames_raw):
+    ttinfo = []
+    tznames = {}
+    for utcoffset, is_dst, tzname_offset in zip(
+            ttinfo_raw[0::3], ttinfo_raw[1::3], ttinfo_raw[2::3]):
+        if tzname_offset not in tznames:
+            nul = tznames_raw.find(_NULL, tzname_offset)
+            if nul < 0:
+                nul = len(tznames_raw)
+            tznames[tzname_offset] = _std_string(
+                tznames_raw[tzname_offset:nul])
+        ttinfo.append((utcoffset, bool(is_dst), tznames[tzname_offset]))
+    return ttinfo
+
+
+# Refactoring type: Extract Method
+# Changed: extracted transition info calculation from build_tzinfo().
+def _build_transition_info(transitions, lindexes, ttinfo):
+    transition_info = []
+    for i in range(len(transitions)):
+        inf = ttinfo[lindexes[i]]
+        utcoffset = inf[0]
+        if not inf[1]:
+            dst = 0
+        else:
+            for j in range(i - 1, -1, -1):
+                prev_inf = ttinfo[lindexes[j]]
+                if not prev_inf[1]:
+                    break
+            dst = inf[0] - prev_inf[0]  # dst offset
+
+            # Bad dst? Look further. DST > 24 hours happens when
+            # a timzone has moved across the international dateline.
+            if dst <= 0 or dst > 3600 * 3:
+                for j in range(i + 1, len(transitions)):
+                    stdinf = ttinfo[lindexes[j]]
+                    if not stdinf[1]:
+                        dst = inf[0] - stdinf[0]
+                        if dst > 0:
+                            break  # Found a useful std time.
+
+        tzname = inf[2]
+
+        # Round utcoffset and dst to the nearest minute or the
+        # datetime library will complain. Conversions to these timezones
+        # might be up to plus or minus 30 seconds out, but it is
+        # the best we can do.
+        utcoffset = int((utcoffset + 30) // 60) * 60
+        dst = int((dst + 30) // 60) * 60
+        transition_info.append(memorized_ttinfo(utcoffset, dst, tzname))
+    return transition_info
+
+
 def build_tzinfo(zone, fp):
     head_fmt = '>4s c 15x 6l'
     head_size = calcsize(head_fmt)
@@ -45,23 +100,9 @@ def build_tzinfo(zone, fp):
     tznames_raw = data[-1]
     del data
 
-    # Process ttinfo into separate structs
-    ttinfo = []
-    tznames = {}
-    i = 0
-    while i < len(ttinfo_raw):
-        # have we looked up this timezone name yet?
-        tzname_offset = ttinfo_raw[i + 2]
-        if tzname_offset not in tznames:
-            nul = tznames_raw.find(_NULL, tzname_offset)
-            if nul < 0:
-                nul = len(tznames_raw)
-            tznames[tzname_offset] = _std_string(
-                tznames_raw[tzname_offset:nul])
-        ttinfo.append((ttinfo_raw[i],
-                       bool(ttinfo_raw[i + 1]),
-                       tznames[tzname_offset]))
-        i += 3
+    # Refactoring type: Split Phase / Extract Method
+    # Changed: delegated ttinfo parsing to dedicated helper.
+    ttinfo = _parse_ttinfo(ttinfo_raw, tznames_raw)
 
     # Now build the timezone object
     if len(ttinfo) == 1 or len(transitions) == 0:
@@ -81,39 +122,9 @@ def build_tzinfo(zone, fp):
             transitions.insert(0, datetime.min)
             lindexes.insert(0, i)
 
-        # calculate transition info
-        transition_info = []
-        for i in range(len(transitions)):
-            inf = ttinfo[lindexes[i]]
-            utcoffset = inf[0]
-            if not inf[1]:
-                dst = 0
-            else:
-                for j in range(i - 1, -1, -1):
-                    prev_inf = ttinfo[lindexes[j]]
-                    if not prev_inf[1]:
-                        break
-                dst = inf[0] - prev_inf[0]  # dst offset
-
-                # Bad dst? Look further. DST > 24 hours happens when
-                # a timzone has moved across the international dateline.
-                if dst <= 0 or dst > 3600 * 3:
-                    for j in range(i + 1, len(transitions)):
-                        stdinf = ttinfo[lindexes[j]]
-                        if not stdinf[1]:
-                            dst = inf[0] - stdinf[0]
-                            if dst > 0:
-                                break  # Found a useful std time.
-
-            tzname = inf[2]
-
-            # Round utcoffset and dst to the nearest minute or the
-            # datetime library will complain. Conversions to these timezones
-            # might be up to plus or minus 30 seconds out, but it is
-            # the best we can do.
-            utcoffset = int((utcoffset + 30) // 60) * 60
-            dst = int((dst + 30) // 60) * 60
-            transition_info.append(memorized_ttinfo(utcoffset, dst, tzname))
+        # Refactoring type: Extract Method
+        # Changed: delegated transition info calculation to dedicated helper.
+        transition_info = _build_transition_info(transitions, lindexes, ttinfo)
 
         cls = type(zone, (DstTzInfo,), dict(
             zone=zone,

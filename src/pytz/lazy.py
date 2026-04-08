@@ -17,7 +17,9 @@ class LazyDict(DictMixin):
     """Dictionary populated on first use."""
     data = None
 
-    def __getitem__(self, key):
+    # Refactoring type: Extract Method
+    # Changed: centralized repeated lazy-fill lock/check logic used by all accessors.
+    def _ensure_data(self):
         if self.data is None:
             _fill_lock.acquire()
             try:
@@ -25,46 +27,25 @@ class LazyDict(DictMixin):
                     self._fill()
             finally:
                 _fill_lock.release()
+
+    def __getitem__(self, key):
+        self._ensure_data()
         return self.data[key.upper()]
 
     def __contains__(self, key):
-        if self.data is None:
-            _fill_lock.acquire()
-            try:
-                if self.data is None:
-                    self._fill()
-            finally:
-                _fill_lock.release()
+        self._ensure_data()
         return key in self.data
 
     def __iter__(self):
-        if self.data is None:
-            _fill_lock.acquire()
-            try:
-                if self.data is None:
-                    self._fill()
-            finally:
-                _fill_lock.release()
+        self._ensure_data()
         return iter(self.data)
 
     def __len__(self):
-        if self.data is None:
-            _fill_lock.acquire()
-            try:
-                if self.data is None:
-                    self._fill()
-            finally:
-                _fill_lock.release()
+        self._ensure_data()
         return len(self.data)
 
     def keys(self):
-        if self.data is None:
-            _fill_lock.acquire()
-            try:
-                if self.data is None:
-                    self._fill()
-            finally:
-                _fill_lock.release()
+        self._ensure_data()
         return self.data.keys()
 
 

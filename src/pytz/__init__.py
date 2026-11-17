@@ -134,6 +134,16 @@ def resource_exists(name):
         return False
 
 
+def _resource_lines(name):
+    # Refactoring: share UTF-8 resource iteration and guaranteed cleanup.
+    resource = open_resource(name)
+    try:
+        for line in resource:
+            yield line.decode('UTF-8')
+    finally:
+        resource.close()
+
+
 _tzinfo_cache = {}
 
 
@@ -366,22 +376,14 @@ class _CountryTimezoneDict(LazyDict):
 
     def _fill(self):
         data = {}
-        zone_tab = open_resource('zone.tab')
-        try:
-            for line in zone_tab:
-                line = line.decode('UTF-8')
-                if line.startswith('#'):
-                    continue
-                code, coordinates, zone = line.split(None, 4)[:3]
-                if zone not in all_timezones_set:  # noqa
-                    continue
-                try:
-                    data[code].append(zone)
-                except KeyError:
-                    data[code] = [zone]
-            self.data = data
-        finally:
-            zone_tab.close()
+        for line in _resource_lines('zone.tab'):
+            if line.startswith('#'):
+                continue
+            code, coordinates, zone = line.split(None, 4)[:3]
+            if zone not in all_timezones_set:  # noqa
+                continue
+            data.setdefault(code, []).append(zone)
+        self.data = data
 
 
 country_timezones = _CountryTimezoneDict()
@@ -395,17 +397,12 @@ class _CountryNameDict(LazyDict):
     '''
     def _fill(self):
         data = {}
-        zone_tab = open_resource('iso3166.tab')
-        try:
-            for line in zone_tab.readlines():
-                line = line.decode('UTF-8')
-                if line.startswith('#'):
-                    continue
-                code, name = line.split(None, 1)
-                data[code] = name.strip()
-            self.data = data
-        finally:
-            zone_tab.close()
+        for line in _resource_lines('iso3166.tab'):
+            if line.startswith('#'):
+                continue
+            code, name = line.split(None, 1)
+            data[code] = name.strip()
+        self.data = data
 
 
 country_names = _CountryNameDict()

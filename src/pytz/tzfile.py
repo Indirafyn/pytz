@@ -21,6 +21,24 @@ def _std_string(s):
     return str(s.decode('ASCII'))
 
 
+def _dst_offset(ttinfo, lindexes, transition_index):
+    # Refactoring: extract the standard-offset search from transition parsing.
+    inf = ttinfo[lindexes[transition_index]]
+    for previous_index in range(transition_index - 1, -1, -1):
+        previous = ttinfo[lindexes[previous_index]]
+        if not previous[1]:
+            break
+    dst = inf[0] - previous[0]
+    if dst <= 0 or dst > 3600 * 3:
+        for next_index in range(transition_index + 1, len(lindexes)):
+            standard = ttinfo[lindexes[next_index]]
+            if not standard[1]:
+                dst = inf[0] - standard[0]
+                if 0 < abs(dst) <= 3600 * 3:
+                    break
+    return dst
+
+
 def build_tzinfo(zone, fp):
     head_fmt = '>4s c 15x 6l'
     head_size = calcsize(head_fmt)
@@ -89,23 +107,7 @@ def build_tzinfo(zone, fp):
             if not inf[1]:
                 dst = 0
             else:
-                for j in range(i - 1, -1, -1):
-                    prev_inf = ttinfo[lindexes[j]]
-                    if not prev_inf[1]:
-                        break
-                dst = inf[0] - prev_inf[0]  # dst offset
-
-                # Bad dst? Look further. DST > 24 hours happens when
-                # a timezone has moved across the international dateline.
-                # DST <= 0 can be a zone realignment (e.g. Vilnius MSK->CEST); 
-                # or legitimate negative DST (e.g. Morocco, Ireland).
-                if dst <= 0 or dst > 3600 * 3:
-                    for j in range(i + 1, len(transitions)):
-                        stdinf = ttinfo[lindexes[j]]
-                        if not stdinf[1]:
-                            dst = inf[0] - stdinf[0]
-                            if 0 < abs(dst) <= 3600 * 3:
-                                break  # Found a useful std time.
+                dst = _dst_offset(ttinfo, lindexes, i)
 
             tzname = inf[2]
 

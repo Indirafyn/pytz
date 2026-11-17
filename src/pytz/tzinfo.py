@@ -258,6 +258,14 @@ class DstTzInfo(BaseTzInfo):
         # convert it back, and return it
         return self.fromutc(dt)
 
+    def _localized_tzinfo(self, dt, is_dst):
+        # Refactoring: centralize timezone-state resolution for tzinfo methods.
+        if dt is None:
+            return None
+        if dt.tzinfo is not self:
+            dt = self.localize(dt, is_dst)
+        return dt.tzinfo
+
     def localize(self, dt, is_dst=False):
         '''Convert naive time to local time.
 
@@ -424,13 +432,8 @@ class DstTzInfo(BaseTzInfo):
         Ambiguous
 
         '''
-        if dt is None:
-            return None
-        elif dt.tzinfo is not self:
-            dt = self.localize(dt, is_dst)
-            return dt.tzinfo._utcoffset
-        else:
-            return self._utcoffset
+        tzinfo = self._localized_tzinfo(dt, is_dst)
+        return None if tzinfo is None else tzinfo._utcoffset
 
     def dst(self, dt, is_dst=None):
         '''See datetime.tzinfo.dst
@@ -463,13 +466,8 @@ class DstTzInfo(BaseTzInfo):
         Ambiguous
 
         '''
-        if dt is None:
-            return None
-        elif dt.tzinfo is not self:
-            dt = self.localize(dt, is_dst)
-            return dt.tzinfo._dst
-        else:
-            return self._dst
+        tzinfo = self._localized_tzinfo(dt, is_dst)
+        return None if tzinfo is None else tzinfo._dst
 
     def tzname(self, dt, is_dst=None):
         '''See datetime.tzinfo.tzname
@@ -501,13 +499,8 @@ class DstTzInfo(BaseTzInfo):
         ...     print('Ambiguous')
         Ambiguous
         '''
-        if dt is None:
-            return self.zone
-        elif dt.tzinfo is not self:
-            dt = self.localize(dt, is_dst)
-            return dt.tzinfo._tzname
-        else:
-            return self._tzname
+        tzinfo = self._localized_tzinfo(dt, is_dst)
+        return self.zone if tzinfo is None else tzinfo._tzname
 
     def __repr__(self):
         if self._dst:

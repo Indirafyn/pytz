@@ -13,59 +13,68 @@ except ImportError:  # Python < 3.3
 _fill_lock = RLock()
 
 
+def _fill_if_needed(instance):
+    # Refactoring: centralize the repeated thread-safe lazy initialization.
+    if instance.data is None:
+        _fill_lock.acquire()
+        try:
+            if instance.data is None:
+                instance._fill()
+        finally:
+            _fill_lock.release()
+
+
 class LazyDict(DictMixin):
     """Dictionary populated on first use."""
     data = None
 
     def __getitem__(self, key):
-        if self.data is None:
-            _fill_lock.acquire()
-            try:
-                if self.data is None:
-                    self._fill()
-            finally:
-                _fill_lock.release()
+        _fill_if_needed(self)
         return self.data[key.upper()]
 
     def __contains__(self, key):
-        if self.data is None:
-            _fill_lock.acquire()
-            try:
-                if self.data is None:
-                    self._fill()
-            finally:
-                _fill_lock.release()
+        _fill_if_needed(self)
         return key in self.data
 
     def __iter__(self):
-        if self.data is None:
-            _fill_lock.acquire()
-            try:
-                if self.data is None:
-                    self._fill()
-            finally:
-                _fill_lock.release()
+        _fill_if_needed(self)
         return iter(self.data)
 
     def __len__(self):
-        if self.data is None:
-            _fill_lock.acquire()
-            try:
-                if self.data is None:
-                    self._fill()
-            finally:
-                _fill_lock.release()
+        _fill_if_needed(self)
         return len(self.data)
 
     def keys(self):
-        if self.data is None:
+        _fill_if_needed(self)
+        return self.data.keys()
+
+
+def _lazy_container(container_type, props, fill_iter, populate):
+    # Refactoring: share the lazy proxy factory used by lists and sets.
+    if fill_iter is None:
+        return container_type()
+
+    class LazyContainer(container_type):
+        pass
+
+    pending = [fill_iter]
+
+    def lazy(name):
+        def _lazy(self, *args, **kw):
             _fill_lock.acquire()
             try:
-                if self.data is None:
-                    self._fill()
+                if pending:
+                    populate(self, pending.pop())
+                    for method_name in props:
+                        delattr(LazyContainer, method_name)
             finally:
                 _fill_lock.release()
-        return self.data.keys()
+            return getattr(container_type, name)(self, *args, **kw)
+        return _lazy
+
+    for name in props:
+        setattr(LazyContainer, name, lazy(name))
+    return LazyContainer()
 
 
 class LazyList(list):
@@ -82,35 +91,9 @@ class LazyList(list):
         '__reversed__', '__getslice__', '__setslice__', '__delslice__']
 
     def __new__(cls, fill_iter=None):
-
-        if fill_iter is None:
-            return list()
-
-        # We need a new class as we will be dynamically messing with its
-        # methods.
-        class LazyList(list):
-            pass
-
-        fill_iter = [fill_iter]
-
-        def lazy(name):
-            def _lazy(self, *args, **kw):
-                _fill_lock.acquire()
-                try:
-                    if len(fill_iter) > 0:
-                        list.extend(self, fill_iter.pop())
-                        for method_name in cls._props:
-                            delattr(LazyList, method_name)
-                finally:
-                    _fill_lock.release()
-                return getattr(list, name)(self, *args, **kw)
-            return _lazy
-
-        for name in cls._props:
-            setattr(LazyList, name, lazy(name))
-
-        new_list = LazyList()
-        return new_list
+        return _lazy_container(
+            list, cls._props, fill_iter,
+            lambda instance, values: list.extend(instance, values))
 
 # Not all versions of Python declare the same magic methods.
 # Filter out properties that don't exist in this version of Python
@@ -137,34 +120,10 @@ class LazySet(set):
         'union', 'update')
 
     def __new__(cls, fill_iter=None):
-
-        if fill_iter is None:
-            return set()
-
-        class LazySet(set):
-            pass
-
-        fill_iter = [fill_iter]
-
-        def lazy(name):
-            def _lazy(self, *args, **kw):
-                _fill_lock.acquire()
-                try:
-                    if len(fill_iter) > 0:
-                        for i in fill_iter.pop():
-                            set.add(self, i)
-                        for method_name in cls._props:
-                            delattr(LazySet, method_name)
-                finally:
-                    _fill_lock.release()
-                return getattr(set, name)(self, *args, **kw)
-            return _lazy
-
-        for name in cls._props:
-            setattr(LazySet, name, lazy(name))
-
-        new_set = LazySet()
-        return new_set
+        return _lazy_container(
+            set, cls._props, fill_iter,
+            lambda instance, values: [
+                set.add(instance, value) for value in values])
 
 # Not all versions of Python declare the same magic methods.
 # Filter out properties that don't exist in this version of Python

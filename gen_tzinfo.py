@@ -17,13 +17,22 @@ zoneinfo = os.path.abspath(os.path.join(
 ))
 
 
+def _is_tzfile(filename):
+    # Refactoring: isolate header inspection and guarantee file cleanup.
+    zonefile = open(filename, 'rb')
+    try:
+        return zonefile.read(4) == b'TZif'
+    finally:
+        zonefile.close()
+
+
 def allzones():
     ''' Return all available tzfile(5) files in the zoneinfo database '''
     zones = []
     for dirpath, dirnames, filenames in os.walk(zoneinfo):
         for f in filenames:
             p = os.path.join(dirpath, f)
-            if open(p, 'rb').read(4) == b'TZif':
+            if _is_tzfile(p):
                 zones.append(p)
     stripnum = len(os.path.commonprefix(zones))
     zones = [z[stripnum:] for z in zones]
@@ -66,60 +75,51 @@ def links():
 
 def dupe_src(destdir):
     ''' Copy ./src to our dest directory '''
-    if not os.path.isdir(destdir):
-        os.makedirs(destdir)
-    for f in glob(os.path.join('src', '*')):
-        if not os.path.isdir(f):
-            shutil.copy(f, destdir)
+    # Refactoring: parameterize the three identical source-copy phases.
+    def copy_files(source, destination):
+        if not os.path.isdir(destination):
+            os.makedirs(destination)
+        for filename in glob(os.path.join(source, '*')):
+            if not os.path.isdir(filename):
+                shutil.copy(filename, destination)
 
-    destdir = os.path.join(destdir, 'pytz')
-    if not os.path.isdir(destdir):
-        os.makedirs(destdir)
-    for f in glob(os.path.join('src', 'pytz', '*')):
-        if not os.path.isdir(f):
-            shutil.copy(f, destdir)
-
-    destdir = os.path.join(destdir, 'tests')
-    if not os.path.isdir(destdir):
-        os.makedirs(destdir)
-    for f in glob(os.path.join('src', 'pytz', 'tests', '*')):
-        if not os.path.isdir(f):
-            shutil.copy(f, destdir)
+    copy_files('src', destdir)
+    copy_files('src/pytz', os.path.join(destdir, 'pytz'))
+    copy_files('src/pytz/tests', os.path.join(destdir, 'pytz', 'tests'))
 
 
-def add_allzones(filename):
-    ''' Append a list of all know timezones to the end of the file '''
-    outf = open(filename, 'a')
-
+def _common_timezones():
+    # Refactoring: separate common-zone calculation from generated-file output.
     obsolete_zones = links().keys()
-
-    # Calculate 'common' timezones as best we can. We start with all
-    # timezones, strip out the legacy noise, and any name linked to
-    # a more canonical name (eg. Asia/Singapore is preferred to just
-    # Singapore)
-    cz = [
+    common = [
         z for z in allzones()
         if (z not in obsolete_zones and
             '/' in z and
             not z.startswith('SystemV/') and
             not z.startswith('Etc/'))]
-    # And extend our list manually with stuff we think deserves to be
-    # labelled 'common'.
-    cz.extend([
+    common.extend([
         'UTC', 'GMT', 'US/Eastern', 'US/Pacific', 'US/Mountain',
         'US/Central', 'US/Arizona', 'US/Hawaii', 'US/Alaska',
-        # Canadian timezones per Bug #506341
         'Canada/Newfoundland', 'Canada/Atlantic', 'Canada/Eastern',
         'Canada/Central', 'Canada/Mountain', 'Canada/Pacific'])
-    # And extend out list with all preferred country timezones.
     zone_tab = open(os.path.join(zoneinfo, 'zone.tab'), 'r')
-    for line in zone_tab:
-        if line.startswith('#'):
-            continue
-        code, coordinates, zone = line.split(None, 4)[:3]
-        if zone not in cz:
-            cz.append(zone)
-    cz.sort()
+    try:
+        for line in zone_tab:
+            if line.startswith('#'):
+                continue
+            code, coordinates, zone = line.split(None, 4)[:3]
+            if zone not in common:
+                common.append(zone)
+    finally:
+        zone_tab.close()
+    common.sort()
+    return common
+
+
+def add_allzones(filename):
+    ''' Append a list of all know timezones to the end of the file '''
+    outf = open(filename, 'a')
+    cz = _common_timezones()
 
     print('_all_timezones_unchecked = \\', file=outf)
     pprint(sorted(allzones()), outf)
